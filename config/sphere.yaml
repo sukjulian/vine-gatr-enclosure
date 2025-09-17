@@ -1,0 +1,14 @@
+model:
+  hidden_mv_channels: 4
+  num_blocks: 4
+  num_heads: 4
+
+training:
+  batch_size: 1
+  loss_term_factors:
+    generic: 1.
+  lr: 3e-4
+  lr_decay_factor: 1.
+  num_epochs: 1000
+
+variance_gaussians: ???

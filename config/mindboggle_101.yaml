@@ -1,0 +1,27 @@
+metric: classification_accuracy
+
+model:
+  encoder_num_layers: 1  # case "vine_gatr"
+  hidden_mv_channels: 8
+  num_blocks: 10
+  num_heads: 4
+  num_virtual_nodes: 1000  # case "vine_gatr"
+  use_grade_mixer_pga_interface: False  # case "vine_gatr"
+  virtual_nodes_init_distribution: uniform  # case "vine_gatr"
+  virtual_s_channels: 64  # case "vine_gatr"
+
+scaling:
+  strategy: vine_gatr
+  compression: 0.0033  # case "lab_gatr"
+  num_samples: 1000  # case "gatr_and_subsampling" or "rng_gatr"
+
+training:
+  batch_size: 1
+  grad_accumulation_num_steps: 4
+  loss_term_factors:
+    attractive: 1.
+    repulsive: 1.
+  lr: 3e-4
+  lr_decay_factor: 0.9955
+  num_epochs: ???
+  var_lr: 3e-4

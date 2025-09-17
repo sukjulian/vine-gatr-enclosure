@@ -1,0 +1,32 @@
+name: the-return-of-the-king
+method: bayes
+metric:
+  goal: maximize
+  name: metric
+early_terminate:
+  type: hyperband
+  max_iter: 300
+  s: 1
+  eta: 3
+
+parameters:
+  model:
+    parameters:
+      encoder_num_layers:
+        min: 1
+        max: 2
+      virtual_nodes_init_distribution:
+        values: [uniform, truncated_normal]
+      virtual_s_channels:
+        values: [64, 128]
+  training:
+    parameters:
+      var_lr:
+        min: 1e-4
+        max: 1e-3
+
+command:
+- python
+- scripts/mindboggle_101.py
+- training.num_epochs=300
+- +wandb=True

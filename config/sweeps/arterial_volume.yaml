@@ -1,0 +1,29 @@
+name: an-unexpected-journey
+method: bayes
+metric:
+  goal: minimize
+  name: metric
+early_terminate:
+  type: hyperband
+  max_iter: 100
+  s: 1
+  eta: 2
+
+parameters:
+  model:
+    parameters:
+      virtual_nodes_init_distribution:
+        values: [uniform, truncated_normal]
+  training:
+    parameters:
+      loss:
+        values: [l1, mse]
+      var_lr:
+        min: 1e-4
+        max: 1e-3
+
+command:
+- python
+- scripts/arterial_volume.py
+- training.num_epochs=100
+- +wandb=True

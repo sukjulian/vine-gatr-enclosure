@@ -1,0 +1,19 @@
+name: pareto-vine-gatr
+method: grid
+metric:
+  goal: maximize
+  name: metric
+
+parameters:
+  model:
+    parameters:
+      num_virtual_nodes:
+        values: [1e2, 1e3]
+  sweep:
+    values: [alpha, beta, gamma, delta]
+
+command:
+- python
+- scripts/mindboggle_101.py
+- training.num_epochs=800
+- +wandb=True

@@ -1,0 +1,28 @@
+model:
+  compression: 0.030303  # case "lab_gatr"
+  encoder_num_layers: 2
+  hidden_mv_channels: 8
+  id: vine_gatr_reg
+  num_blocks: 10
+  num_heads: 4
+  num_virtual_nodes: 512  # case "vine_gatr" or "rng_gatr"
+  virtual_nodes_init_distribution: truncated_normal  # case "vine_gatr"
+  virtual_s_channels: 16  # case "vine_gatr"
+  attractive_radius: 10.
+  repulsive_radius: 10.
+  spectral_t: 1000.
+  spectral_n_neigh: 64
+  laplacian_sigma: .1
+
+training:
+  batch_size: 4
+  loss: l1
+  lr: 0.002213879679994093
+  lr_decay_factor: 0.9980538841790216
+  var_lr: 0.027364592441485855
+  split_valid: True
+  num_epochs: 200
+  train_seed: 42
+  lambda_repulsive: 0.
+  lambda_attractive: 0.
+  lambda_spectral: 1.

@@ -1,0 +1,20 @@
+name: pareto-rng-gatr
+method: grid
+metric:
+  goal: maximize
+  name: metric
+
+parameters:
+  scaling:
+    parameters:
+      num_samples:
+        values: [100, 1000]
+  sweep:
+    values: [alpha, beta, gamma, delta]
+
+command:
+- python
+- scripts/mindboggle_101.py
+- scaling.strategy=rng_gatr
+- training.num_epochs=800
+- +wandb=True

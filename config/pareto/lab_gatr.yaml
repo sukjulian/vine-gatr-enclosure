@@ -1,0 +1,20 @@
+name: pareto-lab-gatr
+method: grid
+metric:
+  goal: maximize
+  name: metric
+
+parameters:
+  scaling:
+    parameters:
+      compression:
+        values: [0.000333, 0.003333, 0.033333]
+  sweep:
+    values: [alpha, beta, gamma, delta]
+
+command:
+- python
+- scripts/mindboggle_101.py
+- scaling.strategy=lab_gatr
+- training.num_epochs=400
+- +wandb=True

@@ -1,0 +1,24 @@
+model:
+  # compression: 0.014083732189030094 # = 512. / 36354.  # case "lab_gatr"
+  compression: 0.01551 # = 512. / 36354.  # case "lab_gatr"
+  encoder_num_layers: 1
+  hidden_mv_channels: 8
+  id: lab_gatr
+  num_blocks: 10
+  num_heads: 4
+  num_virtual_nodes: None  # case "vine_gatr" or "rng_gatr"
+  virtual_nodes_init_distribution: truncated_normal  # case "vine_gatr"
+  virtual_s_channels: None  # case "vine_gatr"
+  use_grade_mixer_pga_interface: False
+
+training:
+  batch_size: 4
+  loss: l1
+  lr: 0.002213879679994093
+  lr_decay_factor: 0.9980538841790216
+  var_lr: 0.
+  num_epochs: 200
+  train_seed: 42
+  split_valid: True
+  improved: True
+

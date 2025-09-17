@@ -1,0 +1,40 @@
+# PyCharm
+.idea
+
+# VSCode
+.vscode
+.mypy_cache
+
+# MAC OS
+.DS_Store
+
+# pytest
+.coverage
+.pytest
+.pytest_cache
+
+# Python
+*__pycache__*
+*.py[cod]
+*.cpython-36.pyc
+*.egg-info
+
+# IDM
+docker/requirements-local.txt
+
+# Patches (not to be committed by mistake)
+*.patch
+
+# Data
+*.vtk
+*.pt
+*.hdf5
+
+# Hydra
+outputs
+
+# Weights & Biases
+wandb
+
+.env
+.figures/

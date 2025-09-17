@@ -1,0 +1,18 @@
+model:
+  compression: 0.030303  # case "lab_gatr"
+  encoder_num_layers: 1
+  hidden_mv_channels: 8
+  id: vine_gatr
+  num_blocks: 10
+  num_heads: 4
+  num_virtual_nodes: 1000  # case "vine_gatr" or "rng_gatr"
+  virtual_nodes_init_distribution: truncated_normal  # case "vine_gatr"
+  virtual_s_channels: 64  # case "vine_gatr"
+
+training:
+  batch_size: 4
+  loss: l1
+  lr: 3e-4
+  lr_decay_factor: 0.9955
+  num_epochs: ???
+  var_lr: 3e-4
