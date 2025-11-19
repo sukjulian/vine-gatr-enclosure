@@ -192,7 +192,6 @@ class BaseExperiment(ABC):
         if (
             "wandb" in self.config and self.config.wandb is True
         ) or wandb.run is not None:
-            print("Watching model gradients!")
             wandb.watch(
                 models=self._model,
                 log="gradients",
@@ -206,8 +205,7 @@ class BaseExperiment(ABC):
 
             loss_cache: Dict[str, Dict[str, List[float]]] = {
                 mode: {term: [] for term in ["total_loss", "loss"]}
-                for mode in ["train", "valid"]
-                # for mode in ["training", "validation"]
+                for mode in ["training", "validation"]
             }
 
             self._model.train()  # training mode
@@ -234,19 +232,19 @@ class BaseExperiment(ABC):
                     )
 
                 description = ""
-                loss_cache["train"]["total_loss"].append(total_loss.item())
+                loss_cache["training"]["total_loss"].append(total_loss.item())
                 for metric_name, metric_value in other_metrics.items():
-                    if metric_name not in loss_cache["train"]:
-                        loss_cache["train"][metric_name] = []
-                    loss_cache["train"][metric_name].append(metric_value)
+                    if metric_name not in loss_cache["training"]:
+                        loss_cache["training"][metric_name] = []
+                    loss_cache["training"][metric_name].append(metric_value)
 
-                    description += f"{metric_name}: {metric_value:.3f} |"
+                    description += f"{metric_name.title()}: {metric_value:.3f} |"
 
                 # pbar_training.set_description(f"Loss: {total_loss:.3f}")
                 pbar_training.set_description(description)
 
-            model_log_dict_train = (
-                {f"train/{k}": v for k, v in self._model.get_log_dict().items()}
+            model_log_dict = (
+                {f"training/{k}": v for k, v in self._model.get_log_dict().items()}
                 if hasattr(self._model, "get_log_dict")
                 else {}
             )  # computed for last batch only
@@ -276,11 +274,11 @@ class BaseExperiment(ABC):
                         data.to(device)
 
                         total_loss, other_metrics, y_ = self._compute_loss(data)
-                        loss_cache["valid"]["total_loss"].append(total_loss.item())
+                        loss_cache["validation"]["total_loss"].append(total_loss.item())
                         for metric_name, metric_value in other_metrics.items():
-                            if metric_name not in loss_cache["valid"]:
-                                loss_cache["valid"][metric_name] = []
-                            loss_cache["valid"][metric_name].append(metric_value)
+                            if metric_name not in loss_cache["validation"]:
+                                loss_cache["validation"][metric_name] = []
+                            loss_cache["validation"][metric_name].append(metric_value)
 
                         y.append(y_)
                         y_data.append(data.y)
@@ -295,19 +293,13 @@ class BaseExperiment(ABC):
                         config=self.config,
                     ).tolist()
 
-                    model_log_dict = (
-                        self._model.get_log_dict()
-                        if hasattr(self._model, "get_log_dict")
-                        else {}
-                    )  # computed for last batch only
                 else:
                     metric = []
-                    model_log_dict = dict()
 
             if isinstance(lr_scheduler, ExponentialLR):
                 lr_scheduler.step()
             elif isinstance(lr_scheduler, ReduceLROnPlateau):
-                lr_scheduler.step(mean(loss_cache["valid"]["loss"]))
+                lr_scheduler.step(mean(loss_cache["validation"]["loss"]))
             else:
                 raise ValueError()
 
@@ -319,10 +311,9 @@ class BaseExperiment(ABC):
                     for term, value in cacheddicts.items()
                     if len(value) > 0
                 },
-                "epoch": epoch,
-                "lr": optimiser.param_groups[0]["lr"],
+                # "epoch": epoch,
+                # "lr": optimiser.param_groups[0]["lr"],
                 **model_log_dict,
-                **model_log_dict_train,
             }
 
             if len(metric) > 0:
@@ -633,11 +624,11 @@ class BaseExperiment(ABC):
         #     return -1
 
         if not os.path.isfile(checkpoint_path):
-            print("Warning: no checkpoint found so starting training from beginning")
+            # print("Warning: no checkpoint found so starting training from beginning")
             # set last epoch to -1, so the training starts at 0
             return -1
 
-        checkpoint = torch.load(checkpoint_path)
+        checkpoint = torch.load(checkpoint_path, weights_only=False)
 
         if scheduler is not None:
             assert "scheduler" in checkpoint

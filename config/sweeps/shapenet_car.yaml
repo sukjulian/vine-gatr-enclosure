@@ -1,0 +1,16 @@
+name: hello-world
+project: gatr-enclosure
+method: grid
+metric:
+  goal: minimize
+  name: metric
+
+parameters:
+  id_seed:
+    values: [one, two, three, four]
+
+command:
+- python
+- scripts/shapenet_car.py
+- training.num_epochs=1000
+- +wandb=True
