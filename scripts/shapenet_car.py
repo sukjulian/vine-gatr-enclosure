@@ -7,14 +7,9 @@ from omegaconf import DictConfig
 from gatr_enclosure.experiments import ShapenetCarExperiment
 
 
-# @hydra.main(version_base=None, config_path="../config", config_name="shapenet_car")
-# @hydra.main(version_base=None, config_path="../config", config_name="shapenet_car_best")
-# @hydra.main(version_base=None, config_path="../config", config_name="shapenet_car_reg")
-@hydra.main(version_base=None, config_path="../config", config_name="shapenet_car_improved")
-# @hydra.main(version_base=None, config_path="../config", config_name="shapenet_car_improved_lab")
+@hydra.main(version_base=None, config_path="../config", config_name="shapenet_car")
 def main(config: DictConfig) -> None:
 
-    
     experiment = ShapenetCarExperiment(config)
     experiment(device=torch.device("cuda"))
     # experiment.time_and_test(device=torch.device("cuda"))

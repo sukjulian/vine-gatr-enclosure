@@ -38,3 +38,15 @@ wandb
 
 .env
 .figures/
+
+# Symlinks
+/datasets
+
+# pre-commit
+.pre-commit-config.yaml
+
+# mypy
+.mypy.ini
+
+# Pylint
+.pylintrc

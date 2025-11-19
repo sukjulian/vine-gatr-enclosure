@@ -10,10 +10,9 @@ from omegaconf import DictConfig
 
 from gatr_enclosure.datasets import Mindboggle101Dataset
 from gatr_enclosure.models import ProjectiveGeometricAlgebraInterface, ViNEGATr
-from gatr_enclosure.nn.loss import (
+from gatr_enclosure.nn.loss import (  # OptimalTransportLoss,
     AttractiveLoss,
     ManifoldRepulsiveLoss,
-    OptimalTransportLoss,
     RepulsiveLoss,
 )
 from gatr_enclosure.transforms import (
@@ -54,14 +53,18 @@ class VirtualNodeEmbedMindboggle101Experiment(BaseExperiment):
         return {"training": idcs, "validation": idcs, "test": idcs}
 
     @staticmethod
-    def loss_fn(y: torch.Tensor, data: pyg.data.Data, config: DictConfig) -> torch.Tensor:
+    def loss_fn(
+        y: torch.Tensor, data: pyg.data.Data, config: DictConfig
+    ) -> torch.Tensor:
         factors = config.training.loss_term_factors
 
         pos = data.pos
         batch = data.batch
 
         virtual_nodes_pos = data.virtual_nodes_pos
-        virtual_nodes_batch = data.virtual_nodes_batch if "virtual_nodes_batch" in data else None
+        virtual_nodes_batch = (
+            data.virtual_nodes_batch if "virtual_nodes_batch" in data else None
+        )
 
         match config.training.loss:
 
@@ -80,21 +83,29 @@ class VirtualNodeEmbedMindboggle101Experiment(BaseExperiment):
                     batch,
                 )
 
-            case "optimal_transport":
-                loss = OptimalTransportLoss()(
-                    virtual_nodes_pos, data.pos, virtual_nodes_batch, batch
-                )
+            # case "optimal_transport":
+            #     loss = OptimalTransportLoss()(
+            #         virtual_nodes_pos, data.pos, virtual_nodes_batch, batch
+            #     )
 
         if "attractive" in config.training.loss and "repulsive_term" in locals():
-            attractive_term = AttractiveLoss()(pos, virtual_nodes_pos, batch, virtual_nodes_batch)
+            attractive_term = AttractiveLoss()(
+                pos, virtual_nodes_pos, batch, virtual_nodes_batch
+            )
 
-            loss = factors.attractive * attractive_term + factors.repulsive * repulsive_term
+            loss = (
+                factors.attractive * attractive_term
+                + factors.repulsive * repulsive_term
+            )
 
         return loss
 
     @staticmethod
     def metric_fn(
-        y: torch.Tensor, y_data: torch.Tensor, scatter_idcs: torch.Tensor, config: DictConfig
+        y: torch.Tensor,
+        y_data: torch.Tensor,
+        scatter_idcs: torch.Tensor,
+        config: DictConfig,
     ) -> torch.Tensor:
 
         dummy = torch.full((scatter_idcs.unique().numel(),), 4.20)

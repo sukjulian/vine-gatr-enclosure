@@ -16,17 +16,24 @@ from gatr_enclosure.models import (
     LaBGATr,
     ProjectiveGeometricAlgebraInterface,
     RNGGATr,
-    ViNEGATr, ViNEGATrWithRegularization
+    ViNEGATr,
+    ViNEGATrWithRegularization,
 )
-from gatr_enclosure.transforms import PointCloudSingularValueDecomposition, Subsampling, LaplacianEigenvectors
-from gatr_enclosure.transforms.functional import idcs_euclidean_dist
+from gatr_enclosure.transforms import (
+    LaplacianEigenvectors,
+    PointCloudSingularValueDecomposition,
+    Subsampling,
+)
+from gatr_enclosure.transforms.functional import idcs_euclidean_dist, surface_normal
 
 from .base import BaseExperiment
 from .utils import compute_mean_squared_error, get_identified_splits_idcs
 
 VALIDATION_SPLIT_IDCS = (
-    57, 414, 787, 569,
-
+    57,
+    414,
+    787,
+    569,
 )
 TEST_SPLIT_IDCS = (
     550,
@@ -236,9 +243,13 @@ class ShapenetCarExperiment(BaseExperiment):
                 model = cast(torch.nn.Module, RNGGATr)
 
         return model(
-            InterfaceImproved() if config.training.improved else Interface(), 
-            decoder_id_query_idcs="dirichlet_boundary", 
-            **config.model
+            (
+                InterfaceImproved()
+                if hasattr(config.training, "improved") and config.training.improved
+                else Interface()
+            ),
+            # decoder_id_query_idcs="dirichlet_boundary",
+            **config.model,
         )
 
     def get_dataset(self, config: DictConfig) -> pyg.data.Dataset:
@@ -248,25 +259,37 @@ class ShapenetCarExperiment(BaseExperiment):
             dir_ = os.path.join("datasets", "shapenet-car-upt")
         else:
             dir_ = os.path.join("datasets", "shapenet-car")
-        
+
         # subset_index_key = 'dirichlet_boundary_index' if config.training.improved else None
 
         pre_transforms = [] if upt else [idcs_euclidean_dist]
         if config.model.id == "vine_gatr":
-            pre_transforms.append(PointCloudSingularValueDecomposition()) #subset_index_key=subset_index_key))
+            pre_transforms.append(
+                PointCloudSingularValueDecomposition()
+            )  # subset_index_key=subset_index_key))
+            pre_transforms.append(surface_normal)
         elif config.model.id == "vine_gatr_reg":
             # pre_transforms.append(PointCloudSingularValueDecomposition(subset_index_key=subset_index_key))
             pre_transforms.append(PointCloudSingularValueDecomposition())
-            pre_transforms.append(LaplacianEigenvectors(
-                # num=32 if config.model.spectral_n_neigh <= 32 else 256,
-                num=min([n for n in [32, 64, 128, 256, 512, 1024] if n >= config.model.spectral_n_neigh]),
-                sigma=config.model.laplacian_sigma,
-                # subset_index_key=subset_index_key
-            ))
+            pre_transforms.append(
+                LaplacianEigenvectors(
+                    # num=32 if config.model.spectral_n_neigh <= 32 else 256,
+                    num=min(
+                        [
+                            n
+                            for n in [32, 64, 128, 256, 512, 1024]
+                            if n >= config.model.spectral_n_neigh
+                        ]
+                    ),
+                    sigma=config.model.laplacian_sigma,
+                    # subset_index_key=subset_index_key
+                )
+            )
         elif config.model.id == "lab_gatr":
             pre_transforms.append(
                 PointCloudPoolingScales(
-                    rel_sampling_ratios=(config.model.compression,), interp_simplex="triangle"
+                    rel_sampling_ratios=(config.model.compression,),
+                    interp_simplex="triangle",
                 )
             )
 
@@ -276,9 +299,11 @@ class ShapenetCarExperiment(BaseExperiment):
         # print(repr(pre_transform))
 
         if config.model.id == "rng_gatr":
-            transform = Subsampling(num_samples=config.model.num_virtual_nodes, in_place=False)
+            transform = Subsampling(
+                num_samples=config.model.num_virtual_nodes, in_place=False
+            )
         # elif config.model.id == "vine_gatr_reg" and subset_index_key is not None:
-            # transform = PointCloudSingularValueDecomposition(subset_index_key=subset_index_key)
+        # transform = PointCloudSingularValueDecomposition(subset_index_key=subset_index_key)
         # elif config.model.id == "lab_gatr":
         #     transform = PointCloudPoolingScales(
         #             rel_sampling_ratios=(config.model.compression,), interp_simplex="triangle"
@@ -286,10 +311,14 @@ class ShapenetCarExperiment(BaseExperiment):
         else:
             transform = None
 
-        if upt: 
-            return ShapenetCarDatasetUPT(dir_, pre_transform=pre_transform, transform=transform)
+        if upt:
+            return ShapenetCarDatasetUPT(
+                dir_, pre_transform=pre_transform, transform=transform
+            )
         else:
-            return ShapenetCarDataset(dir_, pre_transform=pre_transform, transform=transform)
+            return ShapenetCarDataset(
+                dir_, pre_transform=pre_transform, transform=transform
+            )
 
     def get_dataset_splits_idcs(
         self, config: DictConfig
@@ -304,7 +333,9 @@ class ShapenetCarExperiment(BaseExperiment):
             N_val = int(0.12 * (N - N_test))
             rng = np.random.RandomState(42)
             idxs = np.arange(N)
-            mask = (idxs.reshape(-1, 1) == np.array(TEST_SPLIT_IDCS).reshape(1, -1)).any(axis=1)
+            mask = (
+                idxs.reshape(-1, 1) == np.array(TEST_SPLIT_IDCS).reshape(1, -1)
+            ).any(axis=1)
             idxs = idxs[~mask]
             rng.shuffle(idxs)
             validation_split_idcs = idxs[:N_val]
@@ -318,26 +349,33 @@ class ShapenetCarExperiment(BaseExperiment):
         # id_validation_list = id_array[np.array(VALIDATION_SPLIT_IDCS)].tolist()
         id_test_list = id_array[np.array(TEST_SPLIT_IDCS)].tolist()
 
-        print(f'{N} total datapoints | {N_val} validation and {N_test} testing')
-
-        return get_identified_splits_idcs(id_array.tolist(), id_validation_list, id_test_list)
+        return get_identified_splits_idcs(
+            id_array.tolist(), id_validation_list, id_test_list
+        )
 
     @staticmethod
-    def loss_fn(y: torch.Tensor, data: pyg.data.Data, config: DictConfig) -> torch.Tensor:
+    def loss_fn(
+        y: torch.Tensor, data: pyg.data.Data, config: DictConfig
+    ) -> torch.Tensor:
 
-        loss = mse_loss(y, data.y) if config.training.loss == "mse" else l1_loss(y, data.y)
+        loss = (
+            mse_loss(y, data.y) if config.training.loss == "mse" else l1_loss(y, data.y)
+        )
 
         return loss
 
     @staticmethod
     def metric_fn(
-        y: torch.Tensor, y_data: torch.Tensor, scatter_idcs: torch.Tensor, config: DictConfig
+        y: torch.Tensor,
+        y_data: torch.Tensor,
+        scatter_idcs: torch.Tensor,
+        config: DictConfig,
     ) -> torch.Tensor:
 
         metric = compute_mean_squared_error(y, y_data, scatter_idcs)
 
         return metric
-    
+
     # # TODO make sure this attr exists otherwise handle the exception
     @staticmethod
     def get_custom_pos_visualisation(data: pyg.data.Data) -> torch.Tensor:
@@ -345,12 +383,12 @@ class ShapenetCarExperiment(BaseExperiment):
             return []
 
         to_return = []
-        
+
         to_return += [data.virtual_nodes_pos]
 
         if hasattr(data, "frame_id"):
             to_return += [data.frame_id]
-        
+
         return to_return
 
 
@@ -367,12 +405,13 @@ class Interface(ProjectiveGeometricAlgebraInterface):
         mv = torch.cat(
             (
                 embed_point(data.pos).view(-1, 1, 16),
-                embed_oriented_plane(data.field, data.pos).view(-1, 1, 16),
+                embed_oriented_plane(data.surf_normal, data.pos).view(-1, 1, 16),
             ),
             dim=1,
         )
 
-        s = data.euclidean_dist_dirichlet_boundary.view(-1, 1)
+        # s = data.euclidean_dist_dirichlet_boundary.view(-1, 1)
+        s = torch.zeros((data.pos.size(0), 1), device=data.pos.device)  # dummy scalars
 
         return mv, s
 
@@ -416,7 +455,7 @@ class InterfaceImproved(ProjectiveGeometricAlgebraInterface):
 
         mv = (mv.view(N, 1, 2, 16) * onehot.view(N, 2, 1, 1)).reshape(N, 4, 16)
 
-        if hasattr(data, 'sdf'):
+        if hasattr(data, "sdf"):
             s = data.sdf.view(-1, 1)
         else:
             s = data.euclidean_dist_dirichlet_boundary.view(-1, 1)

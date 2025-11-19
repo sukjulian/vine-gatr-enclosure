@@ -2,10 +2,9 @@
 # SPDX-License-Identifier: BSD-3-Clause-Clear
 from abc import ABC, abstractmethod
 from inspect import signature
-from statistics import mean, stdev
+from statistics import mean
 from time import time
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple, Union, cast
-import math
 
 import torch
 import torch_geometric as pyg
@@ -23,7 +22,9 @@ def construct_join_reference(
         batch = torch.zeros(mv.size(0), dtype=torch.int, device=mv.device)
 
     else:
-        join_reference = scatter(mv, batch, dim=0, reduce="mean").mean(dim=1, keepdim=True)
+        join_reference = scatter(mv, batch, dim=0, reduce="mean").mean(
+            dim=1, keepdim=True
+        )
 
     return join_reference[batch] if expand_batch is True else join_reference
 
@@ -38,7 +39,11 @@ def get_attention_mask(
     else:
         attention_mask = BlockDiagonalMask.from_seqlens(
             q_seqlen=torch.bincount(batch_target).tolist(),
-            kv_seqlen=torch.bincount(batch_source).tolist() if batch_source is not None else None,
+            kv_seqlen=(
+                torch.bincount(batch_source).tolist()
+                if batch_source is not None
+                else None
+            ),
         )
 
     return attention_mask
@@ -114,10 +119,12 @@ class Stopwatch:
         self.num_splits = len(tuple(names_splits))
 
         self._time_cache = time()
-        self._durations_splits_cache: Dict[str, List[float]] = {name: [] for name in self.names_splits}
-    
+        self._durations_splits_cache: Dict[str, List[float]] = {
+            name: [] for name in self.names_splits
+        }
+
     def restart(self) -> None:
-        self._durations_splits_cache: Dict[str, List[float]] = {name: [] for name in self.names_splits}
+        self._durations_splits_cache = {name: [] for name in self.names_splits}
 
     def reset(self) -> None:
         self._time_cache = time()
@@ -135,8 +142,5 @@ class Stopwatch:
         return elapsed_time
 
     @property
-    def mean_duration_splits(self) -> Dict[str, Tuple[float, float]]:
-        out = {key: (mean(value), stdev(value)) for key, value in self._durations_splits_cache.items()}
-        out['total'] = sum(val for val, _ in out.values()), math.sqrt(sum(val**2 for _, val in out.values()))
-
-        return out
+    def mean_duration_splits(self) -> Dict[str, float]:
+        return {key: mean(value) for key, value in self._durations_splits_cache.items()}
