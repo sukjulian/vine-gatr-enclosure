@@ -238,7 +238,7 @@ class BaseExperiment(ABC):
                         loss_cache["training"][metric_name] = []
                     loss_cache["training"][metric_name].append(metric_value)
 
-                    description += f"{metric_name.title()}: {metric_value:.3f} |"
+                    description += f"{metric_name.capitalize()}: {metric_value:.3f} |"
 
                 # pbar_training.set_description(f"Loss: {total_loss:.3f}")
                 pbar_training.set_description(description)

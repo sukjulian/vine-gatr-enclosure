@@ -1,6 +1,17 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause-Clear
-from typing import Any, Dict, Iterable, Literal, Optional, Tuple, Union
+from typing import (
+    Any,
+    Callable,
+    Dict,
+    Iterable,
+    Literal,
+    Optional,
+    Sequence,
+    Tuple,
+    Union,
+    overload,
+)
 
 import gatr
 import torch
@@ -13,9 +24,14 @@ from gatr.interface import (
     extract_point,
 )
 from gatr.layers import EquiLinear, GeometricBilinear
-from lab_gatr.models.lab_gatr import CrossAttentionHatchling
-from lab_gatr.nn.mlp.geometric_algebra import EquiLayerNorm, ScalarGatedNonlinearity
+from lab_gatr.models.lab_gatr import CrossAttentionHatchling, interp
+from lab_gatr.nn.mlp.geometric_algebra import (
+    MLP,
+    EquiLayerNorm,
+    ScalarGatedNonlinearity,
+)
 from torch.utils.checkpoint import checkpoint
+from torch_cluster import knn
 
 from gatr_enclosure.nn import LearnedVirtualNodes
 from gatr_enclosure.transforms import PointCloudSingularValueDecomposition
@@ -49,6 +65,9 @@ class ViNEGATr(torch.nn.Module):
         encoder_num_layers: int = 1,
         encoder_only: bool = False,
         decoder_use_checkpointing: bool = False,
+        decoder_id_module: Literal[
+            "cross_attention", "interpolation"
+        ] = "cross_attention",
         decoder_id_query_idcs: Optional[str] = None,
         dropout_prob: Optional[float] = None,
         broken: bool = False,
@@ -79,6 +98,8 @@ class ViNEGATr(torch.nn.Module):
                 altogether. Useful for debugging virtual node positions. Default: False
             decoder_use_checkpointing (bool): Whether to use activation checkpointing in the
                 cross-attention decoder. Default: False
+            decoder_id_module (str): Identifier of the decoder module ("cross_attention" or
+                "interpolation"). Default: "cross_attention"
             decoder_id_query_idcs (str, optional): Identifier of indices for selecting queries in
                 the cross-attention decoder, e.g., "dirichlet_boundary" where
                 "dirichlet_boundary_index" is present in the input data.
@@ -104,11 +125,14 @@ class ViNEGATr(torch.nn.Module):
             init_distribution_std=virtual_nodes_init_distribution_std,
             broken=broken,
         )
-        setattr(self.learned_virtual_nodes.linear_combination.weight, "var_lr_flag", True)
+        setattr(
+            self.learned_virtual_nodes.linear_combination.weight, "var_lr_flag", True
+        )
 
         self.virtual_s = torch.nn.Parameter(
             torch.empty(
-                self.learned_virtual_nodes.linear_combination.weight.size(0), virtual_s_channels
+                self.learned_virtual_nodes.linear_combination.weight.size(0),
+                virtual_s_channels,
             )
         )
         self.learned_virtual_nodes._init_fun(self.virtual_s)
@@ -119,7 +143,9 @@ class ViNEGATr(torch.nn.Module):
         # setattr(self.virtual_s_lyer_norm, "var_lr_flag", True)
 
         # Grade mixing
-        virtual_nodes_mv_channels = num_dim * (1 + self.virtual_nodes_use_orientation * 2) + 1
+        virtual_nodes_mv_channels = (
+            num_dim * (1 + self.virtual_nodes_use_orientation * 2) + 1
+        )
         if self.broken:
             virtual_nodes_mv_channels *= self.learned_virtual_nodes._num_frames
 
@@ -140,7 +166,9 @@ class ViNEGATr(torch.nn.Module):
         self.use_grade_mixer_pga_interface = use_grade_mixer_pga_interface
         if self.use_grade_mixer_pga_interface is True:
             self.grade_mixer_pga_interface = self._get_grade_mixer(
-                pga_interface.in_mv_channels, hidden_mv_channels, pga_interface.in_s_channels
+                pga_interface.in_mv_channels,
+                hidden_mv_channels,
+                pga_interface.in_s_channels,
             )
             # for param in self.grade_mixer_pga_interface.parameters():
             #     setattr(param, "var_lr_flag", True)
@@ -151,13 +179,16 @@ class ViNEGATr(torch.nn.Module):
             if self.use_grade_mixer_pga_interface is True
             else pga_interface.in_mv_channels
         )
+        encoder_out_mv_channels = (
+            1 if decoder_id_module == "interpolation" else hidden_mv_channels
+        )
         self.encoder_layers = torch.nn.ModuleList()
         for _ in range(encoder_num_layers):
             self.encoder_layers.append(
                 CrossAttentionHatchling(
                     num_input_channels_source=in_mv_channels,
                     num_input_channels_target=hidden_mv_channels,
-                    num_output_channels=hidden_mv_channels,
+                    num_output_channels=encoder_out_mv_channels,
                     num_input_scalars_source=pga_interface.in_s_channels,
                     num_input_scalars_target=virtual_s_channels,
                     num_output_scalars=virtual_s_channels,
@@ -178,7 +209,7 @@ class ViNEGATr(torch.nn.Module):
 
             # Backend
             self.backend = gatr.GATr(
-                in_mv_channels=hidden_mv_channels,
+                in_mv_channels=encoder_out_mv_channels,
                 out_mv_channels=hidden_mv_channels,
                 hidden_mv_channels=hidden_mv_channels,
                 in_s_channels=virtual_s_channels,
@@ -191,31 +222,53 @@ class ViNEGATr(torch.nn.Module):
             )
 
             # Decoding
-            self.decoder = CrossAttentionHatchling(
-                num_input_channels_source=hidden_mv_channels,
-                num_input_channels_target=in_mv_channels,
-                num_output_channels=pga_interface.out_mv_channels,
-                num_input_scalars_source=virtual_s_channels,
-                num_input_scalars_target=pga_interface.in_s_channels,
-                num_output_scalars=1,  # soothe the 🐊
-                num_attn_heads=num_heads,
-                num_latent_channels=hidden_mv_channels,
-                dropout_probability=dropout_prob,
-            )
+            self.decoder_id_module = decoder_id_module
+            match self.decoder_id_module:
+
+                case "cross_attention":
+                    self.decoder = CrossAttentionHatchling(
+                        num_input_channels_source=hidden_mv_channels,
+                        num_input_channels_target=in_mv_channels,
+                        num_output_channels=pga_interface.out_mv_channels,
+                        num_input_scalars_source=virtual_s_channels,
+                        num_input_scalars_target=pga_interface.in_s_channels,
+                        num_output_scalars=1,  # soothe the 🐊
+                        num_attn_heads=num_heads,
+                        num_latent_channels=hidden_mv_channels,
+                        dropout_probability=dropout_prob,
+                    )
+                    self.decoder_use_checkpointing = decoder_use_checkpointing
+                    self.decoder_id_query_idcs = decoder_id_query_idcs
+
+                case "interpolation":
+                    self.decoder_mlp = MLP(
+                        (
+                            hidden_mv_channels + in_mv_channels,
+                            hidden_mv_channels,
+                            hidden_mv_channels,
+                            pga_interface.out_mv_channels,
+                        ),
+                        num_input_scalars=virtual_s_channels
+                        + pga_interface.in_s_channels,
+                        num_output_scalars=pga_interface.in_s_channels,
+                        use_norm_in_first=False,
+                        dropout_probability=dropout_prob,
+                    )
+
             # for param in self.decoder.parameters():
             #     setattr(param, "var_lr_flag", True)
-            self.decoder_use_checkpointing = decoder_use_checkpointing
-            self.decoder_id_query_idcs = decoder_id_query_idcs
 
             names_modules.extend(("backend", "decoding"))
-        
+
         if online_pca:
             self.pca = PointCloudSingularValueDecomposition()
-            names_modules += ['preprocessing']
+            names_modules += ["preprocessing"]
         else:
             self.pca = None
 
-        self.num_param = sum(param.numel() for param in self.parameters() if param.requires_grad)
+        self.num_param = sum(
+            param.numel() for param in self.parameters() if param.requires_grad
+        )
         print(f"ViNE-GATr ({self.num_param} parameters)")
 
         self.stopwatch = Stopwatch(names_splits=names_modules)
@@ -239,7 +292,9 @@ class ViNEGATr(torch.nn.Module):
 
         return grade_mixer
 
-    def forward(self, data: pyg.data.Data, batch: Optional[torch.Tensor] = None) -> torch.Tensor:
+    def forward(
+        self, data: pyg.data.Data, batch: Optional[torch.Tensor] = None
+    ) -> torch.Tensor:
 
         if self.training is False:
             self.stopwatch.reset()
@@ -250,7 +305,9 @@ class ViNEGATr(torch.nn.Module):
                 self.stopwatch.time_split("preprocessing")
 
         mv_source, s_source = self.pga_interface.embed(data)
-        batch_source = None if batch is not None and batch.unique().numel() == 1 else batch
+        batch_source = (
+            None if batch is not None and batch.unique().numel() == 1 else batch
+        )
 
         # Virtual nodes
         num_pos = self._get_num_pos(data.pos, batch)
@@ -264,10 +321,15 @@ class ViNEGATr(torch.nn.Module):
         )
 
         batch_size, num_frames, _, _ = virtual_nodes_bases.shape
-        s_target = torch.cat((
-            s_target,
-            self.virtual_s.tile(batch_size * num_frames if not self.broken else batch_size, 1)
-        ), dim=1)
+        s_target = torch.cat(
+            (
+                s_target,
+                self.virtual_s.tile(
+                    batch_size * num_frames if not self.broken else batch_size, 1
+                ),
+            ),
+            dim=1,
+        )
 
         s_target = self.virtual_s_layer_norm(s_target)
 
@@ -276,9 +338,8 @@ class ViNEGATr(torch.nn.Module):
         )
 
         if self.tweak_reference:
-            join_reference_source = join_reference_source * 2.
-            join_reference_target = join_reference_target * 2.
-
+            join_reference_source = join_reference_source * 2.0
+            join_reference_target = join_reference_target * 2.0
 
         if self.training is False:
             self.stopwatch.time_split("setup")
@@ -286,7 +347,10 @@ class ViNEGATr(torch.nn.Module):
         # Grade mixing
         if self.use_grade_mixer_pga_interface is True:
             mv_source, s_source = self._call_tensor_product(
-                self.grade_mixer_pga_interface, mv_source, s_source, join_reference_source
+                self.grade_mixer_pga_interface,
+                mv_source,
+                s_source,
+                join_reference_source,
             )
 
         mv, s = self._call_tensor_product(
@@ -302,13 +366,28 @@ class ViNEGATr(torch.nn.Module):
         # Encoding
         for layer in self.encoder_layers:
             mv, s = self._call_cross_attention(
-                layer, mv_source, mv, s_source, s, batch_source, batch_target, join_reference_target
+                layer,
+                mv_source,
+                mv,
+                s_source,
+                s,
+                batch_source,
+                batch_target,
+                join_reference_target,
             )
 
         self._log_cache = (mv, s, batch_size, num_frames)
-        data.virtual_nodes_pos, data.virtual_nodes_batch = self._extract_pos(mv, batch_target)
-        data.cross_attention_pos = self.get_cross_attention_pos(batch_source, batch_target)
-        data.frame_id = frame_id.reshape(mv.shape[0], 1).expand(mv.shape[0], mv.shape[1]).reshape(-1)
+        data.virtual_nodes_pos, data.virtual_nodes_batch = self._extract_pos(
+            mv, batch_target
+        )
+        data.cross_attention_pos = self.get_cross_attention_pos(
+            batch_source, batch_target
+        )
+        data.frame_id = (
+            frame_id.reshape(mv.shape[0], 1)
+            .expand(mv.shape[0], mv.shape[1])
+            .reshape(-1)
+        )
 
         if self.training is False:
             self.stopwatch.time_split("encoding")
@@ -324,26 +403,49 @@ class ViNEGATr(torch.nn.Module):
                 self.stopwatch.time_split("backend")
 
             # Decoding
-            if self.decoder_id_query_idcs is not None:
-                mv_source, s_source, batch_source, join_reference_source = get_decoder_query(
-                    data[f"{self.decoder_id_query_idcs}_index"],
-                    mv_source,
-                    s_source,
-                    batch_source,
-                    join_reference_source,
-                )
+            match self.decoder_id_module:
 
-            mv, s = self._call_cross_attention(
-                self.decoder,
-                mv,
-                mv_source,
-                s,
-                s_source,
-                batch_target,
-                batch_source,
-                join_reference_source,
-                use_checkpointing=self.decoder_use_checkpointing,
-            )
+                case "cross_attention":
+                    if self.decoder_id_query_idcs is not None:
+                        mv_source, s_source, batch_source, join_reference_source = (
+                            get_decoder_query(
+                                data[f"{self.decoder_id_query_idcs}_index"],
+                                mv_source,
+                                s_source,
+                                batch_source,
+                                join_reference_source,
+                            )
+                        )
+
+                    mv, s = self._call_cross_attention(
+                        self.decoder,
+                        mv,
+                        mv_source,
+                        s,
+                        s_source,
+                        batch_target,
+                        batch_source,
+                        join_reference_source,
+                        use_checkpointing=self.decoder_use_checkpointing,
+                    )
+
+                case "interpolation":
+                    mv, s = self._call_interpolation(
+                        data.virtual_nodes_pos,
+                        data.pos,
+                        self.decoder_mlp,
+                        mv,
+                        mv_source,
+                        s,
+                        s_source,
+                        (
+                            data.virtual_nodes_batch
+                            if hasattr(data, "virtual_nodes_batch")
+                            else None
+                        ),
+                        batch_source,
+                        join_reference_source,
+                    )
 
             if self.training is False:
                 self.stopwatch.time_split("decoding")
@@ -351,7 +453,9 @@ class ViNEGATr(torch.nn.Module):
         return self.pga_interface.extract(mv, s)
 
     @staticmethod
-    def _get_num_pos(pos: torch.Tensor, batch: Union[None, torch.Tensor]) -> torch.Tensor:
+    def _get_num_pos(
+        pos: torch.Tensor, batch: Union[None, torch.Tensor]
+    ) -> torch.Tensor:
 
         if batch is None:
             num_pos = torch.tensor(pos.size(0), device=pos.device)
@@ -369,23 +473,50 @@ class ViNEGATr(torch.nn.Module):
         batch_target: Union[None, torch.Tensor],
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
-        join_reference = construct_join_reference(mv_source, batch_source, expand_batch=False)
+        join_reference = construct_join_reference(
+            mv_source, batch_source, expand_batch=False
+        )
 
         if batch_source is None:
-            batch_source = torch.zeros(mv_source.size(0), dtype=torch.int, device=mv_source.device)
+            batch_source = torch.zeros(
+                mv_source.size(0), dtype=torch.int, device=mv_source.device
+            )
 
         if batch_target is None:
-            batch_target = torch.zeros(mv_target.size(0), dtype=torch.int, device=mv_source.device)
+            batch_target = torch.zeros(
+                mv_target.size(0), dtype=torch.int, device=mv_source.device
+            )
 
         return (join_reference[batch_source], join_reference[batch_target])
+
+    @overload
+    def _embed_virtual_nodes(
+        self,
+        virtual_nodes_bases: torch.Tensor,
+        virtual_nodes_coord: torch.Tensor,
+        origin: torch.Tensor,
+        return_frame_id: Literal[False],
+    ) -> Tuple[torch.Tensor, torch.Tensor, Union[None, torch.Tensor]]: ...
+
+    @overload
+    def _embed_virtual_nodes(
+        self,
+        virtual_nodes_bases: torch.Tensor,
+        virtual_nodes_coord: torch.Tensor,
+        origin: torch.Tensor,
+        return_frame_id: Literal[True],
+    ) -> Tuple[torch.Tensor, torch.Tensor, Union[None, torch.Tensor], torch.Tensor]: ...
 
     def _embed_virtual_nodes(
         self,
         virtual_nodes_bases: torch.Tensor,
         virtual_nodes_coord: torch.Tensor,
         origin: torch.Tensor,
-        return_frame_id: bool = False
-    ) -> Tuple[torch.Tensor, torch.Tensor, Union[None, torch.Tensor]]:
+        return_frame_id: bool = False,
+    ) -> Union[
+        Tuple[torch.Tensor, torch.Tensor, Union[None, torch.Tensor]],
+        Tuple[torch.Tensor, torch.Tensor, Union[None, torch.Tensor], torch.Tensor],
+    ]:
 
         batch_size, num_frames, _, _ = virtual_nodes_bases.shape
         num_virtual_nodes_coord, num_dim = virtual_nodes_coord.shape
@@ -404,7 +535,8 @@ class ViNEGATr(torch.nn.Module):
             # Ambient
             virtual_nodes_orientation_bases = virtual_nodes_bases[:, :, :, 3:6]
             mv_ = embed_oriented_plane(
-                virtual_nodes_orientation_bases, torch.zeros_like(virtual_nodes_orientation_bases)
+                virtual_nodes_orientation_bases,
+                torch.zeros_like(virtual_nodes_orientation_bases),
             )
             mv = torch.cat((mv, mv_), dim=2)
 
@@ -429,36 +561,55 @@ class ViNEGATr(torch.nn.Module):
 
         if self.broken:
             # PyG-style batching
-            mv = mv.view(
-                batch_size, 1, num_frames, num_channels, 16
-            ).expand(
-                batch_size, num_virtual_nodes_coord, num_frames, num_channels, 16
-            ).reshape(
-                batch_size * num_virtual_nodes_coord, num_frames * num_channels, 16
+            mv = (
+                mv.view(batch_size, 1, num_frames, num_channels, 16)
+                .expand(
+                    batch_size, num_virtual_nodes_coord, num_frames, num_channels, 16
+                )
+                .reshape(
+                    batch_size * num_virtual_nodes_coord, num_frames * num_channels, 16
+                )
             )
             s = virtual_nodes_coord.tile(batch_size, 1)
 
-            assert s.shape[0] == mv.shape[0], (s.shape, mv.shape, batch_size, num_virtual_nodes_coord, num_dim)
+            assert s.shape[0] == mv.shape[0], (
+                s.shape,
+                mv.shape,
+                batch_size,
+                num_virtual_nodes_coord,
+                num_dim,
+            )
             num_virtual_nodes = num_virtual_nodes_coord
         else:
             # PyG-style batching
             mv = mv.repeat_interleave(num_virtual_nodes_coord, dim=1).view(
                 # batch_size * num_virtual_nodes_coord * num_frames, -1, 16
-                batch_size * num_virtual_nodes_coord * num_frames, num_channels, 16
+                batch_size * num_virtual_nodes_coord * num_frames,
+                num_channels,
+                16,
             )
             s = virtual_nodes_coord.tile(batch_size * num_frames, 1)
             num_virtual_nodes = num_virtual_nodes_coord * num_frames
 
-        assert s.shape == (batch_size * num_virtual_nodes, num_dim), (s.shape, batch_size, num_virtual_nodes, virtual_nodes_coord.shape)
+        assert s.shape == (batch_size * num_virtual_nodes, num_dim), (
+            s.shape,
+            batch_size,
+            num_virtual_nodes,
+            virtual_nodes_coord.shape,
+        )
 
         if batch_size > 1:
-            batch = torch.arange(batch_size, device=virtual_nodes_bases.device).repeat_interleave(num_virtual_nodes)
+            batch = torch.arange(
+                batch_size, device=virtual_nodes_bases.device
+            ).repeat_interleave(num_virtual_nodes)
         else:
             batch = None
 
         if return_frame_id:
             if self.broken:
-                frame_id = torch.zeros(batch_size * num_virtual_nodes, 1, 1, dtype=torch.long)
+                frame_id = torch.zeros(
+                    batch_size * num_virtual_nodes, 1, 1, dtype=torch.long
+                )
             else:
                 frame_id = (
                     torch.arange(num_frames)
@@ -474,7 +625,10 @@ class ViNEGATr(torch.nn.Module):
 
     @staticmethod
     def _call_tensor_product(
-        module: torch.nn.Module, mv: torch.Tensor, s: torch.Tensor, join_reference: torch.Tensor
+        module: torch.nn.Module,
+        mv: torch.Tensor,
+        s: torch.Tensor,
+        join_reference: torch.Tensor,
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         mv, s = module(mv, s, join_reference)
@@ -510,7 +664,12 @@ class ViNEGATr(torch.nn.Module):
 
         else:
             mv, s = module(
-                mv_source, mv_target, s_source, s_target, attention_mask, join_reference_target
+                mv_source,
+                mv_target,
+                s_source,
+                s_target,
+                attention_mask,
+                join_reference_target,
             )
 
         return mv, s
@@ -542,19 +701,62 @@ class ViNEGATr(torch.nn.Module):
 
         return pos, batch
 
+    @staticmethod
+    def _call_interpolation(
+        pos_source: torch.Tensor,
+        pos_target: torch.Tensor,
+        mlp: torch.nn.Module,
+        mv_source: torch.Tensor,
+        mv_target: torch.Tensor,
+        s_source: torch.Tensor,
+        s_target: torch.Tensor,
+        batch_source: Union[None, torch.Tensor],
+        batch_target: Union[None, torch.Tensor],
+        join_reference: torch.Tensor,
+    ) -> Tuple[torch.Tensor, torch.Tensor]:
+
+        idcs_target, idcs_source = knn(
+            pos_source, pos_target, 4, batch_source, batch_target
+        )
+        dummy_data = pyg.data.Data(
+            scale0_interp_source=idcs_source, scale0_interp_target=idcs_target
+        )
+
+        mv, s = interp(
+            mlp,
+            multivectors=mv_source,
+            multivectors_skip=mv_target,
+            scalars=s_source,
+            scalars_skip=s_target,
+            pos_source=pos_source,
+            pos_target=pos_target,
+            data=dummy_data,
+            scale_id=0,
+            reference_multivector=join_reference,
+        )
+
+        return mv, s
+
     def get_log_dict(self) -> Dict[str, Any]:
 
         # Norm of virtual node embedding (ViNE) vectors
         vine = torch.cat(
-            (self.learned_virtual_nodes.linear_combination.weight, self.virtual_s), dim=1
+            (self.learned_virtual_nodes.linear_combination.weight, self.virtual_s),
+            dim=1,
         )
         norm_vine = wandb.Histogram(vine.norm(dim=1).tolist())
 
         # Frame (standard) deviation
         mv, s, batch_size, num_frames = self._log_cache
-        frame_std_mv, frame_std_s = self._compute_frame_std(mv, s, batch_size, num_frames)
+        frame_std_mv, frame_std_s = self._compute_frame_std(
+            mv, s, batch_size, num_frames
+        )
 
-        return {"norm_vine": norm_vine, "frame_std_mv": frame_std_mv, "frame_std_s": frame_std_s}
+        return {
+            "norm_vine": norm_vine,
+            "frame_std_mv": frame_std_mv,
+            "frame_std_s": frame_std_s,
+        }
 
     def _compute_frame_std(
         self, mv: torch.Tensor, s: torch.Tensor, batch_size: int, num_frames: int
@@ -564,10 +766,21 @@ class ViNEGATr(torch.nn.Module):
         num_channels_mv, num_channels_s = mv.size(1), s.size(1)
 
         mv = self._unflatten(mv, (batch_size, num_frames))
-        assert mv.shape == (batch_size, num_frames, num_virtual_nodes_coord, num_channels_mv, 16)
+        assert mv.shape == (
+            batch_size,
+            num_frames,
+            num_virtual_nodes_coord,
+            num_channels_mv,
+            16,
+        )
 
         s = self._unflatten(s, (batch_size, num_frames))
-        assert s.shape == (batch_size, num_frames, num_virtual_nodes_coord, num_channels_s)
+        assert s.shape == (
+            batch_size,
+            num_frames,
+            num_virtual_nodes_coord,
+            num_channels_s,
+        )
 
         frame_std_mv = mv.std(dim=1).quantile(0.94, dim=-1).mean().item()
         frame_std_s = s.std(dim=1).mean().item()
@@ -578,73 +791,124 @@ class ViNEGATr(torch.nn.Module):
     def _unflatten(tensor: torch.Tensor, num_dim: Iterable[int]) -> torch.Tensor:
         return tensor.view(*num_dim, -1, *tensor.shape[1:])
 
-    def _register_hook_crossattention_layer(self, layer: CrossAttentionHatchling, name: str):
-        if not hasattr(self, '_registered_crossattention_pos') or self._registered_crossattention_pos is None:
-            self._registered_crossattention_pos = dict()
+    def _register_hook_crossattention_layer(
+        self, layer: CrossAttentionHatchling, name: str
+    ) -> None:
+        if (
+            not hasattr(self, "_registered_crossattention_pos")
+            or self._registered_crossattention_pos is None
+        ):
+            self._registered_crossattention_pos: Dict[str, Sequence[Any]] = dict()
 
-        def build_hook(storage, name):
-            def hook(model, _input, _output):
+        def build_hook(storage: Dict[str, Sequence[Any]], name: str) -> Callable:
+            def hook(
+                model: torch.nn.Module, _input: Sequence[Any], _output: Sequence[Any]
+            ) -> None:
                 # q_mv, k_mv, _, q_s, k_s, _ = _input[:6]
 
                 # _input = (q_mv, k_mv, v_mv, q_s, k_s, v_s, attention_mask)
                 storage[name] = _input
                 # storage[name] = _input[:2]
+
             return hook
 
-        layer.block.attention.attention.register_forward_hook(build_hook(self._registered_crossattention_pos, name))
-    
-    def get_cross_attention_pos(self, batch_source, batch_target):
+        layer.block.attention.attention.register_forward_hook(
+            build_hook(self._registered_crossattention_pos, name)
+        )
 
-        if not hasattr(self, '_registered_crossattention_pos') or self._registered_crossattention_pos is None:
+    def get_cross_attention_pos(
+        self,
+        batch_source: Union[None, torch.Tensor],
+        batch_target: Union[None, torch.Tensor],
+    ) -> Dict[str, Any]:
+
+        if (
+            not hasattr(self, "_registered_crossattention_pos")
+            or self._registered_crossattention_pos is None
+        ):
             return dict()
 
         cross_attention_pos = dict()
 
         # for key, (q_mv, k_mv, v_mv, q_s, k_s, v_s, attention_mask) in self._registered_crossattention_pos.items():
         # for key, (q_mv, k_mv, v_mv, q_s, k_s, v_s) in self._registered_crossattention_pos.items():
-        for key, cached_cross_attention_input in self._registered_crossattention_pos.items():
+        for (
+            key,
+            cached_cross_attention_input,
+        ) in self._registered_crossattention_pos.items():
             q_mv, k_mv = cached_cross_attention_input[:2]
             # k_mv has shape     1 x   input_tokens x hidden_channels x 16
             # q_mv has shape heads x virtual_tokens x hidden_channels x 16
             # hidden_channels = 4
             # self.encoder_layers[-1].block.attention.attention.log_weights.shape = (heads, 1, hidden_channels)
 
-            hidden_channels = self.encoder_layers[-1].block.attention.attention.log_weights.shape[2]
-            heads = self.encoder_layers[-1].block.attention.attention.log_weights.shape[0]
-            _pos_source, _batch_source = self._extract_pos(k_mv.reshape(-1, hidden_channels, 16), batch_source)
-            _pos_target, _batch_target = self._extract_pos(q_mv.reshape(-1, hidden_channels, 16), batch_target.reshape(1, -1).expand(heads, -1).reshape(-1) if batch_target is not None else None)
+            hidden_channels = self.encoder_layers[
+                -1
+            ].block.attention.attention.log_weights.shape[2]
+            heads = self.encoder_layers[-1].block.attention.attention.log_weights.shape[
+                0
+            ]
+            _pos_source, _batch_source = self._extract_pos(
+                k_mv.reshape(-1, hidden_channels, 16), batch_source
+            )
+            _pos_target, _batch_target = self._extract_pos(
+                q_mv.reshape(-1, hidden_channels, 16),
+                (
+                    batch_target.reshape(1, -1).expand(heads, -1).reshape(-1)
+                    if batch_target is not None
+                    else None
+                ),
+            )
             pos_data = (_pos_source, _pos_target, _batch_source, _batch_target)
 
-            cross_attention_pos[key] = pos_data, cached_cross_attention_input, batch_target
+            cross_attention_pos[key] = (
+                pos_data,
+                cached_cross_attention_input,
+                batch_target,
+            )
 
         self._registered_crossattention_pos.clear()
         return cross_attention_pos
 
-            
-from gatr_enclosure.nn.loss import *
+
+from gatr_enclosure.nn.loss import AttractiveLoss, RepulsiveLoss, SpectralLoss
+
+
 class ViNEGATrWithRegularization(ViNEGATr):
 
     # def __init__(self, *args, attractive_k=8, repulsive_radius=1.5, **kwargs):
-        # super().__init__(*args, **kwargs)
-        # self.attractive = AttractiveLoss(num_nearest_pos=attractive_k)
-        # self.repulsive = RepulsiveLoss(radius_repulsion=repulsive_radius)
-    def __init__(self, *args, attractive_radius=1.5, repulsive_radius=1.5, spectral_t=2., spectral_n_neigh=32, **kwargs):
+    # super().__init__(*args, **kwargs)
+    # self.attractive = AttractiveLoss(num_nearest_pos=attractive_k)
+    # self.repulsive = RepulsiveLoss(radius_repulsion=repulsive_radius)
+    def __init__(
+        self,
+        *args: Any,
+        attractive_radius: float = 1.5,
+        repulsive_radius: float = 1.5,
+        spectral_t: float = 2.0,
+        spectral_n_neigh: int = 32,
+        **kwargs: Any,
+    ):
         super().__init__(*args, **kwargs)
         dense = False
-        self.attractive = AttractiveLoss(radius_attraction=attractive_radius, dense=dense)
+        self.attractive = AttractiveLoss(
+            radius_attraction=attractive_radius, dense=dense
+        )
         self.repulsive = RepulsiveLoss(radius_repulsion=repulsive_radius, dense=dense)
-        self.spectral = SpectralLoss(num_nearest_pos=32, diffusion_t=spectral_t, n_eig=spectral_n_neigh)
+        self.spectral = SpectralLoss(
+            num_nearest_pos=32, diffusion_t=spectral_t, n_eig=spectral_n_neigh
+        )
 
-        self._register_hook_crossattention_layer(self.encoder_layers[-1], 'encoder')
+        self._register_hook_crossattention_layer(self.encoder_layers[-1], "encoder")
 
-
-    def regularization_fn(self, data: pyg.data.Data, batch) -> torch.Tensor:
+    def regularization_fn(
+        self, data: pyg.data.Data, batch: Union[None, torch.Tensor]
+    ) -> torch.Tensor:
 
         # pos_source = data.pos
         # pos_target = data.virtual_nodes_pos
         # batch_source = batch
         # batch_target = data.virtual_nodes_batch
-
 
         losses = {}
 
@@ -652,7 +916,7 @@ class ViNEGATrWithRegularization(ViNEGATr):
         # losses['attractive'] = 1000 * self.attractive(pos_source, pos_target, batch_source, batch_target)
         # losses['repulsive'] = 1000 * self.repulsive(pos_source, batch_source)
 
-        batch_target_virtualnodes = data.cross_attention_pos['encoder'][2]
+        batch_target_virtualnodes = data.cross_attention_pos["encoder"][2]
 
         # if hasattr(data, 'spectral_subset_index'):
         #     spectral_subset_index = data.spectral_subset_index
@@ -660,12 +924,17 @@ class ViNEGATrWithRegularization(ViNEGATr):
         #     spectral_subset_index = None
         spectral_subset_index = None
 
-        loss_repulsive, loss_attractive = self.spectral(data, layer=self.encoder_layers[-1].block.attention.attention, batch_source=batch, batch_target=batch_target_virtualnodes, subset_index=spectral_subset_index)
+        loss_repulsive, loss_attractive = self.spectral(
+            data,
+            layer=self.encoder_layers[-1].block.attention.attention,
+            batch_source=batch,
+            batch_target=batch_target_virtualnodes,
+            subset_index=spectral_subset_index,
+        )
 
-        losses['spectral'] = loss_repulsive - loss_attractive
+        losses["spectral"] = loss_repulsive - loss_attractive
 
-        losses['spectral_rep'] = loss_repulsive
-        losses['spectral_attr'] = loss_attractive
+        losses["spectral_rep"] = loss_repulsive
+        losses["spectral_attr"] = loss_attractive
 
         return losses
-
