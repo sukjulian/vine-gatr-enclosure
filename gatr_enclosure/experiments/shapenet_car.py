@@ -262,12 +262,11 @@ class ShapenetCarExperiment(BaseExperiment):
 
         # subset_index_key = 'dirichlet_boundary_index' if config.training.improved else None
 
-        pre_transforms = [] if upt else [idcs_euclidean_dist]
+        pre_transforms = [] if upt else [idcs_euclidean_dist, surface_normal]
         if config.model.id == "vine_gatr":
             pre_transforms.append(
                 PointCloudSingularValueDecomposition()
             )  # subset_index_key=subset_index_key))
-            pre_transforms.append(surface_normal)
         elif config.model.id == "vine_gatr_reg":
             # pre_transforms.append(PointCloudSingularValueDecomposition(subset_index_key=subset_index_key))
             pre_transforms.append(PointCloudSingularValueDecomposition())
@@ -299,8 +298,19 @@ class ShapenetCarExperiment(BaseExperiment):
         # print(repr(pre_transform))
 
         if config.model.id == "rng_gatr":
+
+            if (
+                hasattr(config.model, "decoder_id_module")
+                and config.model.decoder_id_module == "interpolation"
+            ):
+                num_nearest_neighbours_interpolation = 3
+            else:
+                num_nearest_neighbours_interpolation = None
+
             transform = Subsampling(
-                num_samples=config.model.num_virtual_nodes, in_place=False
+                num_samples=config.model.num_virtual_nodes,
+                in_place=False,
+                num_nearest_neighbours_interpolation=num_nearest_neighbours_interpolation,
             )
         # elif config.model.id == "vine_gatr_reg" and subset_index_key is not None:
         # transform = PointCloudSingularValueDecomposition(subset_index_key=subset_index_key)

@@ -716,7 +716,7 @@ class ViNEGATr(torch.nn.Module):
     ) -> Tuple[torch.Tensor, torch.Tensor]:
 
         idcs_target, idcs_source = knn(
-            pos_source, pos_target, 4, batch_source, batch_target
+            pos_source, pos_target, 3, batch_source, batch_target
         )
         dummy_data = pyg.data.Data(
             scale0_interp_source=idcs_source, scale0_interp_target=idcs_target

@@ -1,13 +1,23 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause-Clear
+from typing import Optional
+
+import lab_gatr
 import torch
 import torch_geometric as pyg
+from torch_cluster import knn
 
 
 class Subsampling:
-    def __init__(self, num_samples: int, in_place: bool = True):
+    def __init__(
+        self,
+        num_samples: int,
+        in_place: bool = True,
+        num_nearest_neighbours_interpolation: Optional[int] = None,
+    ):
         self.num_samples = num_samples
         self.in_place = in_place
+        self.num_nearest_neighbours_interpolation = num_nearest_neighbours_interpolation
 
     def __call__(self, data: pyg.data.Data) -> pyg.data.Data:
         num_pos = data.pos.size(0)
@@ -29,9 +39,20 @@ class Subsampling:
         else:
             data.scale0_sampling_index = idcs
 
+            if self.num_nearest_neighbours_interpolation is not None:
+                idcs_target, idcs_source = knn(
+                    data.pos[idcs],
+                    data.pos,
+                    k=self.num_nearest_neighbours_interpolation,
+                )
+
+                data.scale0_interp_source, data.scale0_interp_target = (
+                    idcs_source,
+                    idcs_target,
+                )
+                data = lab_gatr.data.Data(**data)
+
         return data
 
     def __repr__(self) -> str:
-        return (
-            f"{self.__class__.__name__}(num_samples={self.num_samples}, in_place={self.in_place})"
-        )
+        return f"{self.__class__.__name__}(num_samples={self.num_samples}, in_place={self.in_place}, num_nearest_neighbours_interpolation={self.num_nearest_neighbours_interpolation})"
