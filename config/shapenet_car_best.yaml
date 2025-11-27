@@ -15,6 +15,5 @@ training:
   lr: 0.002213879679994093
   lr_decay_factor: 0.9980538841790216
   var_lr: 0.027364592441485855
-  split_valid: True
   num_epochs: 200
   train_seed: 42

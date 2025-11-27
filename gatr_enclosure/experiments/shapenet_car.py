@@ -1,7 +1,7 @@
 # Copyright (c) Qualcomm Technologies, Inc. and/or its subsidiaries.
 # SPDX-License-Identifier: BSD-3-Clause-Clear
 import os
-from typing import Dict, Literal, Tuple, Union, cast
+from typing import Dict, List, Literal, Tuple, Union, cast
 
 import numpy as np
 import torch
@@ -24,208 +24,14 @@ from gatr_enclosure.transforms import (
     PointCloudSingularValueDecomposition,
     Subsampling,
 )
-from gatr_enclosure.transforms.functional import idcs_euclidean_dist, surface_normal
+from gatr_enclosure.transforms.functional import surface_normal
 
 from .base import BaseExperiment
-from .utils import compute_mean_squared_error, get_identified_splits_idcs
+from .utils import compute_approximation_error, get_identified_splits_idcs
 
-VALIDATION_SPLIT_IDCS = (
-    57,
-    414,
-    787,
-    569,
-)
-TEST_SPLIT_IDCS = (
-    550,
-    592,
-    229,
-    547,
-    62,
-    464,
-    798,
-    836,
-    5,
-    732,
-    876,
-    843,
-    367,
-    496,
-    142,
-    87,
-    88,
-    101,
-    303,
-    352,
-    517,
-    8,
-    462,
-    123,
-    348,
-    714,
-    384,
-    190,
-    505,
-    349,
-    174,
-    805,
-    156,
-    417,
-    764,
-    788,
-    645,
-    108,
-    829,
-    227,
-    555,
-    412,
-    854,
-    21,
-    55,
-    210,
-    188,
-    274,
-    646,
-    320,
-    4,
-    344,
-    525,
-    118,
-    385,
-    669,
-    113,
-    387,
-    222,
-    786,
-    515,
-    407,
-    14,
-    821,
-    239,
-    773,
-    474,
-    725,
-    620,
-    401,
-    546,
-    512,
-    837,
-    353,
-    537,
-    770,
-    41,
-    81,
-    664,
-    699,
-    373,
-    632,
-    411,
-    212,
-    678,
-    528,
-    120,
-    644,
-    500,
-    767,
-    790,
-    16,
-    316,
-    259,
-    134,
-    531,
-    479,
-    356,
-    641,
-    98,
-    294,
-    96,
-    318,
-    808,
-    663,
-    447,
-    445,
-    758,
-    656,
-    177,
-    734,
-    623,
-    216,
-    189,
-    133,
-    427,
-    745,
-    72,
-    257,
-    73,
-    341,
-    584,
-    346,
-    840,
-    182,
-    333,
-    218,
-    602,
-    99,
-    140,
-    809,
-    878,
-    658,
-    779,
-    65,
-    708,
-    84,
-    653,
-    542,
-    111,
-    129,
-    676,
-    163,
-    203,
-    250,
-    209,
-    11,
-    508,
-    671,
-    628,
-    112,
-    317,
-    114,
-    15,
-    723,
-    746,
-    765,
-    720,
-    828,
-    662,
-    665,
-    399,
-    162,
-    495,
-    135,
-    121,
-    181,
-    615,
-    518,
-    749,
-    155,
-    363,
-    195,
-    551,
-    650,
-    877,
-    116,
-    38,
-    338,
-    849,
-    334,
-    109,
-    580,
-    523,
-    631,
-    713,
-    607,
-    651,
-    168,
-)
+# Test (plus validation) split statistics
+PRESSURE_AVERAGE = -36.4098
+PRESSURE_STD = 48.6757
 
 
 class ShapenetCarExperiment(BaseExperiment):
@@ -262,7 +68,7 @@ class ShapenetCarExperiment(BaseExperiment):
 
         # subset_index_key = 'dirichlet_boundary_index' if config.training.improved else None
 
-        pre_transforms = [] if upt else [idcs_euclidean_dist, surface_normal]
+        pre_transforms = [] if upt else [surface_normal]
         if config.model.id == "vine_gatr":
             pre_transforms.append(
                 PointCloudSingularValueDecomposition()
@@ -297,6 +103,13 @@ class ShapenetCarExperiment(BaseExperiment):
         # print("Pre-transform name:")
         # print(repr(pre_transform))
 
+        def standardise_pressure(data: pyg.data.Data) -> pyg.data.Data:
+            data.y = (data.y - PRESSURE_AVERAGE) / PRESSURE_STD
+
+            return data
+
+        transforms = [standardise_pressure]
+
         if config.model.id == "rng_gatr":
 
             if (
@@ -307,19 +120,15 @@ class ShapenetCarExperiment(BaseExperiment):
             else:
                 num_nearest_neighbours_interpolation = None
 
-            transform = Subsampling(
-                num_samples=config.model.num_virtual_nodes,
-                in_place=False,
-                num_nearest_neighbours_interpolation=num_nearest_neighbours_interpolation,
+            transforms.append(
+                Subsampling(
+                    num_samples=config.model.num_virtual_nodes,
+                    in_place=False,
+                    num_nearest_neighbours_interpolation=num_nearest_neighbours_interpolation,
+                )
             )
-        # elif config.model.id == "vine_gatr_reg" and subset_index_key is not None:
-        # transform = PointCloudSingularValueDecomposition(subset_index_key=subset_index_key)
-        # elif config.model.id == "lab_gatr":
-        #     transform = PointCloudPoolingScales(
-        #             rel_sampling_ratios=(config.model.compression,), interp_simplex="triangle"
-        #         )
-        else:
-            transform = None
+
+        transform = pyg.transforms.Compose(transforms)
 
         if upt:
             return ShapenetCarDatasetUPT(
@@ -334,33 +143,12 @@ class ShapenetCarExperiment(BaseExperiment):
         self, config: DictConfig
     ) -> Dict[Literal["training", "validation", "test"], torch.Tensor]:
 
-        id_array = np.array(self._dataset.id_list)
-
-        N = id_array.shape[0]
-        N_test = len(TEST_SPLIT_IDCS)
-
-        if not hasattr(config.training, "split_valid") or config.training.split_valid:
-            N_val = int(0.12 * (N - N_test))
-            rng = np.random.RandomState(42)
-            idxs = np.arange(N)
-            mask = (
-                idxs.reshape(-1, 1) == np.array(TEST_SPLIT_IDCS).reshape(1, -1)
-            ).any(axis=1)
-            idxs = idxs[~mask]
-            rng.shuffle(idxs)
-            validation_split_idcs = idxs[:N_val]
-
-            id_validation_list = id_array[np.array(validation_split_idcs)].tolist()
-
-        else:
-            N_val = 0
-            id_validation_list = []
-
-        # id_validation_list = id_array[np.array(VALIDATION_SPLIT_IDCS)].tolist()
-        id_test_list = id_array[np.array(TEST_SPLIT_IDCS)].tolist()
+        # Folder "param0" (first 100 samples) according to Alkin et al. (2025)
+        id_test_list: List[str] = np.arange(100).astype(str).tolist()
+        id_validation_list: List[str] = []
 
         return get_identified_splits_idcs(
-            id_array.tolist(), id_validation_list, id_test_list
+            self._dataset.id_list, id_validation_list, id_test_list
         )
 
     @staticmethod
@@ -382,7 +170,16 @@ class ShapenetCarExperiment(BaseExperiment):
         config: DictConfig,
     ) -> torch.Tensor:
 
-        metric = compute_mean_squared_error(y, y_data, scatter_idcs)
+        y = y * PRESSURE_STD + PRESSURE_AVERAGE
+        y_data = y_data * PRESSURE_STD + PRESSURE_AVERAGE
+
+        assert (
+            y.dim() == y_data.dim() == 1
+        ), "Relative mean squared error not implemented."
+        y = y.unsqueeze(1)
+        y_data = y_data.unsqueeze(1)
+
+        metric = compute_approximation_error(y, y_data, scatter_idcs)
 
         return metric
 

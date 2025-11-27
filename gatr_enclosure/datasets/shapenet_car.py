@@ -19,7 +19,7 @@ class ShapenetCarDataset(HierachicalDataFormatDatasetMemory):
     def hdf5_to_pyg(data_hdf5: h5py.Group) -> pyg.data.Data:
 
         pressure = torch.from_numpy(data_hdf5["pressure"][()])
-        pressure_normalised = (pressure - PRESSURE_AVERAGE) / PRESSURE_STD
+        # pressure_normalised = (pressure - PRESSURE_AVERAGE) / PRESSURE_STD
 
         # pos_domain = torch.from_numpy(data_hdf5["pos_velocity"][()])
         # velocity = torch.from_numpy(data_hdf5["velocity"][()])
@@ -38,7 +38,7 @@ class ShapenetCarDataset(HierachicalDataFormatDatasetMemory):
         face = torch.from_numpy(data_hdf5["face"][()]).T
 
         data = pyg.data.Data(
-            y=pressure_normalised,
+            y=pressure,
             pos=pos_dirichlet_boundary,
             # field=field,
             # dirichlet_boundary_index=dirichlet_boundary_idcs,

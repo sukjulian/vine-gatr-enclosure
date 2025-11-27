@@ -19,6 +19,5 @@ training:
   var_lr: 0.
   num_epochs: 200
   train_seed: 42
-  split_valid: True
   improved: True
 
