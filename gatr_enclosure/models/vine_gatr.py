@@ -64,10 +64,11 @@ class ViNEGATr(torch.nn.Module):
         virtual_nodes_init_distribution_std: float = 1.0,
         encoder_num_layers: int = 1,
         encoder_only: bool = False,
-        decoder_use_checkpointing: bool = False,
         decoder_id_module: Literal[
             "cross_attention", "interpolation"
         ] = "cross_attention",
+        decoder_num_layers: int = 1,
+        decoder_use_checkpointing: bool = False,
         decoder_id_query_idcs: Optional[str] = None,
         dropout_prob: Optional[float] = None,
         broken: bool = False,
@@ -96,10 +97,11 @@ class ViNEGATr(torch.nn.Module):
             encoder_num_layers (int): Number of cross-attention layers in the encoder. Default: 1
             encoder_only (bool): Whether to skip GATr backend and cross-attention decoder
                 altogether. Useful for debugging virtual node positions. Default: False
-            decoder_use_checkpointing (bool): Whether to use activation checkpointing in the
-                cross-attention decoder. Default: False
             decoder_id_module (str): Identifier of the decoder module ("cross_attention" or
                 "interpolation"). Default: "cross_attention"
+            decoder_num_layers (int): Number of cross-attention layers in the decoder. Default: 1
+            decoder_use_checkpointing (bool): Whether to use activation checkpointing in the
+                cross-attention decoder. Default: False
             decoder_id_query_idcs (str, optional): Identifier of indices for selecting queries in
                 the cross-attention decoder, e.g., "dirichlet_boundary" where
                 "dirichlet_boundary_index" is present in the input data.
@@ -226,17 +228,32 @@ class ViNEGATr(torch.nn.Module):
             match self.decoder_id_module:
 
                 case "cross_attention":
-                    self.decoder = CrossAttentionHatchling(
-                        num_input_channels_source=hidden_mv_channels,
-                        num_input_channels_target=in_mv_channels,
-                        num_output_channels=pga_interface.out_mv_channels,
-                        num_input_scalars_source=virtual_s_channels,
-                        num_input_scalars_target=pga_interface.in_s_channels,
-                        num_output_scalars=1,  # soothe the 🐊
-                        num_attn_heads=num_heads,
-                        num_latent_channels=hidden_mv_channels,
-                        dropout_probability=dropout_prob,
-                    )
+                    self.decoder_layers = torch.nn.ModuleList()
+                    tuple_ = (True, *[False] * (decoder_num_layers - 1))
+                    for layer_is_first, layer_is_last in zip(tuple_, reversed(tuple_)):
+                        self.decoder_layers.append(
+                            CrossAttentionHatchling(
+                                num_input_channels_source=hidden_mv_channels,
+                                num_input_channels_target=(
+                                    in_mv_channels
+                                    if layer_is_first
+                                    else hidden_mv_channels
+                                ),
+                                num_output_channels=(
+                                    pga_interface.out_mv_channels
+                                    if layer_is_last
+                                    else hidden_mv_channels
+                                ),
+                                num_input_scalars_source=virtual_s_channels,
+                                num_input_scalars_target=pga_interface.in_s_channels,
+                                num_output_scalars=(
+                                    1 if layer_is_last else pga_interface.in_s_channels
+                                ),  # soothe the 🐊
+                                num_attn_heads=num_heads,
+                                num_latent_channels=hidden_mv_channels,
+                                dropout_probability=dropout_prob,
+                            )
+                        )
                     self.decoder_use_checkpointing = decoder_use_checkpointing
                     self.decoder_id_query_idcs = decoder_id_query_idcs
 
@@ -417,17 +434,20 @@ class ViNEGATr(torch.nn.Module):
                             )
                         )
 
-                    mv, s = self._call_cross_attention(
-                        self.decoder,
-                        mv,
-                        mv_source,
-                        s,
-                        s_source,
-                        batch_target,
-                        batch_source,
-                        join_reference_source,
-                        use_checkpointing=self.decoder_use_checkpointing,
-                    )
+                    for layer in self.decoder_layers:
+                        mv_source, s_source = self._call_cross_attention(
+                            layer,
+                            mv,
+                            mv_source,
+                            s,
+                            s_source,
+                            batch_target,
+                            batch_source,
+                            join_reference_source,
+                            use_checkpointing=self.decoder_use_checkpointing,
+                        )
+
+                    mv, s = mv_source, s_source
 
                 case "interpolation":
                     mv, s = self._call_interpolation(
