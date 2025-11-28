@@ -69,16 +69,16 @@ class ShapenetCarExperiment(BaseExperiment):
 
         # subset_index_key = 'dirichlet_boundary_index' if config.training.improved else None
 
-        def identify_idcs_bumper(data: pyg.data.Data) -> pyg.data.Data:
-            z_coordinate = data.pos[:, 2]
+        def identify_idcs(data: pyg.data.Data) -> pyg.data.Data:
 
-            idcs = torch.where(z_coordinate <= z_coordinate.quantile(0.01))[0]
-            data.bumper_index = idcs.int()
+            for coord, id_ in zip(data.pos.T, ("passenger_side", "roof", "bumper")):
+                idcs = torch.where(coord <= coord.quantile(0.01))[0]
+                data[f"{id_}_index"] = idcs.int()
 
             return data
 
         pre_transforms = (
-            [] if upt else [surface_normal, identify_idcs_bumper, idcs_euclidean_dist]
+            [] if upt else [surface_normal, identify_idcs, idcs_euclidean_dist]
         )
         if config.model.id == "vine_gatr":
             pre_transforms.append(
@@ -214,7 +214,7 @@ class ShapenetCarExperiment(BaseExperiment):
 class Interface(ProjectiveGeometricAlgebraInterface):
     in_mv_channels = 2
     out_mv_channels = 1
-    in_s_channels = 32
+    in_s_channels = 96
     out_s_channels = None
 
     @staticmethod
@@ -230,7 +230,17 @@ class Interface(ProjectiveGeometricAlgebraInterface):
         )
 
         # s = data.euclidean_dist_dirichlet_boundary.view(-1, 1)
-        s = PositionalEncoding(num_channels=32)(data.euclidean_dist_bumper.view(-1, 1))
+        s = torch.cat(
+            (
+                data.euclidean_dist_passenger_side.view(-1, 1),
+                data.euclidean_dist_roof.view(-1, 1),
+                data.euclidean_dist_bumper.view(-1, 1),
+            ),
+            dim=1,
+        )
+
+        # Positional embedding
+        s = PositionalEncoding(num_channels=96)(s)
 
         return mv, s
 
