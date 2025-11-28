@@ -8,6 +8,7 @@ import torch
 import torch_geometric as pyg
 from gatr.interface import embed_oriented_plane, embed_point, extract_scalar
 from lab_gatr import PointCloudPoolingScales
+from lab_gatr.nn.positional_encoding import PositionalEncoding
 from omegaconf import DictConfig
 from torch.nn.functional import l1_loss, mse_loss
 
@@ -24,14 +25,14 @@ from gatr_enclosure.transforms import (
     PointCloudSingularValueDecomposition,
     Subsampling,
 )
-from gatr_enclosure.transforms.functional import surface_normal
+from gatr_enclosure.transforms.functional import idcs_euclidean_dist, surface_normal
 
 from .base import BaseExperiment
 from .utils import compute_approximation_error, get_identified_splits_idcs
 
-# Test (plus validation) split statistics
-PRESSURE_AVERAGE = -36.4098
-PRESSURE_STD = 48.6757
+# Training split statistics
+PRESSURE_AVERAGE = -36.3886
+PRESSURE_STD = 48.7215
 
 
 class ShapenetCarExperiment(BaseExperiment):
@@ -68,7 +69,17 @@ class ShapenetCarExperiment(BaseExperiment):
 
         # subset_index_key = 'dirichlet_boundary_index' if config.training.improved else None
 
-        pre_transforms = [] if upt else [surface_normal]
+        def identify_idcs_bumper(data: pyg.data.Data) -> pyg.data.Data:
+            z_coordinate = data.pos[:, 2]
+
+            idcs = torch.where(z_coordinate <= z_coordinate.quantile(0.01))[0]
+            data.bumper_index = idcs.int()
+
+            return data
+
+        pre_transforms = (
+            [] if upt else [surface_normal, identify_idcs_bumper, idcs_euclidean_dist]
+        )
         if config.model.id == "vine_gatr":
             pre_transforms.append(
                 PointCloudSingularValueDecomposition()
@@ -145,7 +156,8 @@ class ShapenetCarExperiment(BaseExperiment):
 
         # Folder "param0" (first 100 samples) according to Alkin et al. (2025)
         id_test_list: List[str] = np.arange(100).astype(str).tolist()
-        id_validation_list: List[str] = []
+
+        id_validation_list: List[str] = np.arange(100, 170).astype(str).tolist()
 
         return get_identified_splits_idcs(
             self._dataset.id_list, id_validation_list, id_test_list
@@ -202,7 +214,7 @@ class ShapenetCarExperiment(BaseExperiment):
 class Interface(ProjectiveGeometricAlgebraInterface):
     in_mv_channels = 2
     out_mv_channels = 1
-    in_s_channels = 1
+    in_s_channels = 32
     out_s_channels = None
 
     @staticmethod
@@ -218,7 +230,7 @@ class Interface(ProjectiveGeometricAlgebraInterface):
         )
 
         # s = data.euclidean_dist_dirichlet_boundary.view(-1, 1)
-        s = torch.zeros((data.pos.size(0), 1), device=data.pos.device)  # dummy scalars
+        s = PositionalEncoding(num_channels=32)(data.euclidean_dist_bumper.view(-1, 1))
 
         return mv, s
 

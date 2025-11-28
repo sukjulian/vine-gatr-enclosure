@@ -37,19 +37,19 @@ class Subsampling:
                     delattr(data, key)
 
         else:
-            data.scale0_sampling_index = idcs
+            data.scale0_sampling_index = idcs.int()
 
             if self.num_nearest_neighbours_interpolation is not None:
+
                 idcs_target, idcs_source = knn(
                     data.pos[idcs],
                     data.pos,
                     k=self.num_nearest_neighbours_interpolation,
                 )
 
-                data.scale0_interp_source, data.scale0_interp_target = (
-                    idcs_source,
-                    idcs_target,
-                )
+                data.scale0_interp_source = idcs_source.int()
+                data.scale0_interp_target = idcs_target.int()
+
                 data = lab_gatr.data.Data(**data)
 
         return data
