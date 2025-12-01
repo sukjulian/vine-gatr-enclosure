@@ -63,6 +63,7 @@ class ViNEGATr(torch.nn.Module):
         ] = "uniform",
         virtual_nodes_init_distribution_std: float = 1.0,
         encoder_num_layers: int = 1,
+        encoder_use_positional_encoding: bool = False,
         encoder_only: bool = False,
         decoder_id_module: Literal[
             "cross_attention", "interpolation"
@@ -95,6 +96,8 @@ class ViNEGATr(torch.nn.Module):
             virtual_nodes_init_distribution_std (float): Standard deviation of distribution for
                 initialising virtual node coordinates. Default: 1.0
             encoder_num_layers (int): Number of cross-attention layers in the encoder. Default: 1
+            encoder_use_positional_encoding (bool): Whether to use positional encoding in the
+                cross-attention encoder. Default: False
             encoder_only (bool): Whether to skip GATr backend and cross-attention decoder
                 altogether. Useful for debugging virtual node positions. Default: False
             decoder_id_module (str): Identifier of the decoder module ("cross_attention" or
@@ -110,6 +113,9 @@ class ViNEGATr(torch.nn.Module):
                 of experiment implementation.
         """
         super().__init__()
+
+        for key in kwargs.keys():
+            print(f'Ignoring "{key}" in model initialisation')
 
         self.pga_interface = pga_interface
 
@@ -197,6 +203,7 @@ class ViNEGATr(torch.nn.Module):
                     num_attn_heads=num_heads,
                     num_latent_channels=hidden_mv_channels,
                     dropout_probability=dropout_prob,
+                    use_positional_encoding=encoder_use_positional_encoding,
                 )
             )
         # for param in self.encoder_layers.parameters():

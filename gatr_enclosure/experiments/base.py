@@ -98,7 +98,7 @@ class BaseExperiment(ABC):
             else:
                 project = "gatr-enclosure"
 
-            print("using wadnb with project", project)
+            print("using wandb with project", project)
             wandb.init(config=config, project=project, name=self._id)
 
             self.config = OmegaConf.create(dict(wandb.config.items()))
