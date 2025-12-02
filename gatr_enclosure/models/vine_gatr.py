@@ -62,6 +62,7 @@ class ViNEGATr(torch.nn.Module):
             "normal", "uniform", "truncated_normal"
         ] = "uniform",
         virtual_nodes_init_distribution_std: float = 1.0,
+        virtual_nodes_break_symmetry: bool = False,
         encoder_num_layers: int = 1,
         encoder_use_positional_encoding: bool = False,
         encoder_only: bool = False,
@@ -95,6 +96,8 @@ class ViNEGATr(torch.nn.Module):
                 coordinates ("normal", "uniform" or "truncated_normal"). Default: "uniform"
             virtual_nodes_init_distribution_std (float): Standard deviation of distribution for
                 initialising virtual node coordinates. Default: 1.0
+            virtual_nodes_break_symmetry (bool): Whether virtual node coordinates are initialised
+                breaking permutation symmetry. Default: False
             encoder_num_layers (int): Number of cross-attention layers in the encoder. Default: 1
             encoder_use_positional_encoding (bool): Whether to use positional encoding in the
                 cross-attention encoder. Default: False
@@ -114,7 +117,7 @@ class ViNEGATr(torch.nn.Module):
         """
         super().__init__()
 
-        for key in kwargs.keys():
+        for key in kwargs:
             print(f'Ignoring "{key}" in model initialisation')
 
         self.pga_interface = pga_interface
@@ -137,11 +140,14 @@ class ViNEGATr(torch.nn.Module):
             self.learned_virtual_nodes.linear_combination.weight, "var_lr_flag", True
         )
 
+        self.virtual_nodes_break_symmetry = virtual_nodes_break_symmetry
+        num_virtual_s = (
+            num_virtual_nodes
+            if self.virtual_nodes_break_symmetry is True
+            else self.learned_virtual_nodes.linear_combination.weight.size(0)
+        )
         self.virtual_s = torch.nn.Parameter(
-            torch.empty(
-                self.learned_virtual_nodes.linear_combination.weight.size(0),
-                virtual_s_channels,
-            )
+            torch.empty(num_virtual_s, virtual_s_channels)
         )
         self.learned_virtual_nodes._init_fun(self.virtual_s)
         setattr(self.virtual_s, "var_lr_flag", True)
@@ -345,15 +351,13 @@ class ViNEGATr(torch.nn.Module):
         )
 
         batch_size, num_frames, _, _ = virtual_nodes_bases.shape
-        s_target = torch.cat(
-            (
-                s_target,
-                self.virtual_s.tile(
-                    batch_size * num_frames if not self.broken else batch_size, 1
-                ),
-            ),
-            dim=1,
-        )
+        if self.broken:
+            num_tiles = batch_size
+        else:
+            num_tiles = batch_size * (
+                1 if self.virtual_nodes_break_symmetry is True else num_frames
+            )
+        s_target = torch.cat((s_target, self.virtual_s.tile(num_tiles, 1)), dim=1)
 
         s_target = self.virtual_s_layer_norm(s_target)
 
@@ -767,10 +771,13 @@ class ViNEGATr(torch.nn.Module):
     def get_log_dict(self) -> Dict[str, Any]:
 
         # Norm of virtual node embedding (ViNE) vectors
-        vine = torch.cat(
-            (self.learned_virtual_nodes.linear_combination.weight, self.virtual_s),
-            dim=1,
-        )
+        if self.virtual_nodes_break_symmetry is True:
+            vine = self.virtual_s
+        else:
+            vine = torch.cat(
+                (self.learned_virtual_nodes.linear_combination.weight, self.virtual_s),
+                dim=1,
+            )
         norm_vine = wandb.Histogram(vine.norm(dim=1).tolist())
 
         # Frame (standard) deviation
